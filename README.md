@@ -7,6 +7,10 @@ The bot answers only from your website documents. When it does not know, or
 when the visitor is ready, it offers an appointment for the next 7 days of
 configured working hours.
 
+Visitors can also check an existing booking: ask to check an appointment, give
+the email used at booking time, and the bot replies with the slot time or says
+the slot has already expired.
+
 ## Quick start (Windows)
 
 ```

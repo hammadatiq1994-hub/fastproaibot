@@ -96,7 +96,7 @@
   </header>
   <div class="card">
     <p><strong>Local test page.</strong> On WordPress, use <code>wordpress-chat-widget.php</code> instead. Configure <code>API_SECRET_KEY</code> in <code>.env</code> so it matches the key used here (demo only; WordPress keeps the key server-side).</p>
-    <p>Try: “What services do you offer?” or “I would like to book an appointment”.</p>
+    <p>Try: “What services do you offer?”, “I would like to book an appointment”, or “Check my appointment”.</p>
   </div>
 
   <div id="aicb-root">
@@ -289,6 +289,7 @@
           addMessage('bot', 'Hi, I am ' + document.getElementById('aicb-title').textContent + '. How can I help you today?', false);
           setButtons([
             { label: 'Book Appointment', value: 'I would like to book an appointment' },
+            { label: 'Check my appointment', value: 'I would like to check my appointment' },
             { label: 'Our services', value: 'What services do you offer?' }
           ]);
         }

@@ -147,6 +147,12 @@ APPOINTMENT GUIDANCE
   warm close. NEVER offer to book again.
 - Never claim a slot is booked until the system confirms it.
 
+CHECKING AN EXISTING APPOINTMENT
+- If the visitor wants to check, confirm, or look up an appointment they
+  already made, ask for the email address they booked with. Never guess or
+  invent whether a booking exists, and never state a time from memory.
+- The appointment lookup is handled by the system. Keep this reply short.
+
 HANDLING DIFFICULT MOMENTS
 - If the user is frustrated or complains: acknowledge the feeling first
   ("I'm sorry for the trouble"), then help or offer the appointment.
@@ -158,7 +164,7 @@ HANDLING DIFFICULT MOMENTS
 QUICK REPLIES
 You may attach suggested buttons for the widget by ending your reply with a
 JSON block on its own last line, exactly in this form (no markdown fences):
-__BUTTONS__[{{"label":"Book Appointment","value":"I would like to book an appointment"}},{{"label":"See services","value":"What services do you offer?"}}]
+__BUTTONS__[{{"label":"Book Appointment","value":"I would like to book an appointment"}},{{"label":"Check my appointment","value":"I would like to check my appointment"}},{{"label":"See services","value":"What services do you offer?"}}]
 Omit __BUTTONS__ if no buttons are needed. When the user is ready to pick a
 time, tell them slots will appear as buttons (the server injects them).
 
@@ -249,7 +255,23 @@ def _get_session(session_id: Optional[str]) -> Tuple[str, List[Dict[str, str]]]:
 def _save_session(session_id: str, messages: List[Dict[str, str]]) -> None:
     trimmed = messages[-config.MAX_HISTORY_MESSAGES :]
     with _sessions_lock:
-        _sessions[session_id] = {"messages": trimmed, "updated": time.time()}
+        # Preserve extra fields (e.g. "mode") set by other helpers.
+        rec = _sessions.setdefault(session_id, {"messages": [], "updated": time.time()})
+        rec["messages"] = trimmed
+        rec["updated"] = time.time()
+
+
+def _get_session_mode(session_id: str) -> Optional[str]:
+    with _sessions_lock:
+        rec = _sessions.get(session_id)
+        return rec.get("mode") if rec else None
+
+
+def _set_session_mode(session_id: str, mode: Optional[str]) -> None:
+    with _sessions_lock:
+        rec = _sessions.setdefault(session_id, {"messages": [], "updated": time.time()})
+        rec["mode"] = mode
+        rec["updated"] = time.time()
 
 
 def _openai_client() -> OpenAI:
@@ -340,6 +362,164 @@ def _looks_like_slot_choice(message: str) -> Optional[str]:
     except ValueError:
         return None
     return None
+
+
+# -- Appointment status lookup ----------------------------------------------
+EMAIL_SEARCH_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_BOOK_ACTION_RE = re.compile(r"\b(book|schedule|reserve|create|make|new)\b", re.IGNORECASE)
+_STATUS_ACTION_RE = re.compile(
+    r"\b(check|status|when|what time|confirm|verify|find|look|scheduled|already)\b",
+    re.IGNORECASE,
+)
+_LOOKUP_PHRASES = (
+    "check my appointment",
+    "check the appointment",
+    "check appointment",
+    "check my booking",
+    "check booking",
+    "check my slot",
+    "check my reservation",
+    "check status",
+    "check my schedule",
+    "my appointment",
+    "my booking",
+    "my reservation",
+    "appointment status",
+    "booking status",
+    "appointment time",
+    "booking time",
+    "slot time",
+    "when is my",
+    "when's my",
+    "what time is my",
+    "confirm my appointment",
+    "confirm my booking",
+    "already booked",
+    "do i have an appointment",
+    "do i have a booking",
+    "am i booked",
+    "anything scheduled",
+    "look up my appointment",
+    "find my appointment",
+)
+_CANCEL_RE = re.compile(
+    r"\b(cancel|never ?mind|forget it|no thanks|no thank you|stop)\b", re.IGNORECASE
+)
+
+
+def _is_appointment_lookup(message: str) -> bool:
+    """True when the visitor is asking to check an existing appointment."""
+    text = message.lower()
+    if not any(phrase in text for phrase in _LOOKUP_PHRASES):
+        return False
+    # "book my appointment" is a booking request, not a status check.
+    if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
+        return False
+    return True
+
+
+def _extract_email(message: str) -> Optional[str]:
+    match = EMAIL_SEARCH_RE.search(message)
+    return match.group(0) if match else None
+
+
+def _format_appointment_time(start_iso: str, end_iso: str) -> str:
+    tz = config.TIMEZONE
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except ValueError:
+        return start_iso
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    start = start.astimezone(tz)
+
+    try:
+        end = datetime.fromisoformat(end_iso)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=tz)
+        end = end.astimezone(tz)
+        end_text = end.strftime("%I:%M %p").lstrip("0")
+    except (TypeError, ValueError):
+        end_text = ""
+
+    day = start.strftime("%A, %B %d, %Y")
+    start_text = start.strftime("%I:%M %p").lstrip("0")
+    if end_text:
+        return f"{day} from {start_text} to {end_text} ({config.TIMEZONE_NAME})"
+    return f"{day} at {start_text} ({config.TIMEZONE_NAME})"
+
+
+def _appointment_status_reply(email: str) -> str:
+    """Look up the visitor's appointments and describe expired vs upcoming."""
+    try:
+        appointments = calendar_service.find_appointments_by_email(email)
+    except Exception as exc:
+        logger.exception("Appointment lookup failed: %s", exc)
+        return (
+            "I'm sorry, I couldn't check your appointment right now. "
+            "Please try again in a moment."
+        )
+
+    if not appointments:
+        return (
+            f"I couldn't find any appointment booked with {email}. "
+            "Would you like me to book one for you?"
+        )
+
+    now = datetime.now(config.TIMEZONE)
+    upcoming: List[Tuple[datetime, Dict[str, Any]]] = []
+    expired: List[Tuple[datetime, Dict[str, Any]]] = []
+    for appt in appointments:
+        try:
+            start = datetime.fromisoformat(appt.get("start", ""))
+        except (TypeError, ValueError):
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=config.TIMEZONE)
+        start = start.astimezone(config.TIMEZONE)
+        (expired if start < now else upcoming).append((start, appt))
+
+    if not upcoming and not expired:
+        return (
+            f"I found a booking for {email}, but its time could not be read. "
+            "Please contact us to confirm."
+        )
+
+    lines: List[str] = []
+    if upcoming:
+        if len(upcoming) == 1:
+            appt = upcoming[0][1]
+            lines.append(
+                "Yes, your appointment is confirmed for "
+                f"{_format_appointment_time(appt.get('start', ''), appt.get('end', ''))}."
+            )
+        else:
+            lines.append("Yes, you have these upcoming appointments:")
+            for _, appt in upcoming:
+                lines.append(
+                    "- "
+                    + _format_appointment_time(appt.get("start", ""), appt.get("end", ""))
+                )
+
+    if expired:
+        if upcoming:
+            lines.append("These earlier appointments have already expired:")
+        elif len(expired) == 1:
+            appt = expired[0][1]
+            lines.append(
+                "Your appointment on "
+                f"{_format_appointment_time(appt.get('start', ''), appt.get('end', ''))} "
+                "has already expired."
+            )
+            expired = []
+        else:
+            lines.append("All of your appointments have already expired:")
+        for _, appt in expired:
+            lines.append(
+                "- " + _format_appointment_time(appt.get("start", ""), appt.get("end", ""))
+            )
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +620,45 @@ def chat():
         return jsonify({"error": f"Message exceeds {config.MAX_MESSAGE_LENGTH} characters."}), 400
 
     session_id, history = _get_session(session_id)
+
+    # Appointment status lookup runs deterministically (no LLM guesswork):
+    # it asks for the visitor's email, looks up the booking, then reports
+    # whether the slot is still upcoming or has already expired.
+    mode = _get_session_mode(session_id)
+    if _is_appointment_lookup(message) or mode == "lookup":
+        if _CANCEL_RE.search(message) and not _extract_email(message):
+            _set_session_mode(session_id, None)
+            reply = "No problem. Is there anything else I can help you with?"
+            buttons = [{"label": "Book Appointment", "value": "I would like to book an appointment"}]
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": reply})
+            _save_session(session_id, history)
+            return jsonify(
+                {"reply": reply, "session_id": session_id, "buttons": buttons, "sources_used": 0}
+            )
+
+        email = _extract_email(message)
+        if not email:
+            _set_session_mode(session_id, "lookup")
+            reply = (
+                "Sure, I can check that for you. "
+                "Please enter the email address you used when booking."
+            )
+            buttons = [
+                {"label": "Book Appointment", "value": "I would like to book an appointment"},
+                {"label": "Cancel", "value": "cancel"},
+            ]
+        else:
+            _set_session_mode(session_id, None)
+            reply = _appointment_status_reply(email)
+            buttons = [{"label": "Book Appointment", "value": "I would like to book an appointment"}]
+
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        _save_session(session_id, history)
+        return jsonify(
+            {"reply": reply, "session_id": session_id, "buttons": buttons, "sources_used": 0}
+        )
 
     # If the user just picked a slot, acknowledge and ask for remaining details
     # (or confirm if we already have them). The actual booking is POST /api/book.

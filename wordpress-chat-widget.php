@@ -389,6 +389,7 @@ function aicb_js() {
     addMessage('bot', 'Hi, I am ' + (document.getElementById('aicb-title').textContent || 'the assistant') + '. How can I help you today?', false);
     setButtons([
       { label: 'Book Appointment', value: 'I would like to book an appointment' },
+      { label: 'Check my appointment', value: 'I would like to check my appointment' },
       { label: 'Our services', value: 'What services do you offer?' }
     ]);
   }

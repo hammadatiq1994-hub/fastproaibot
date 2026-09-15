@@ -164,6 +164,116 @@ def _overlaps(start: datetime, end: datetime, busy: List[Tuple[datetime, datetim
     return False
 
 
+def _local_appointments_for_email(email: str) -> List[Dict[str, Any]]:
+    """Filter the local bookings.json fallback by attendee email."""
+    target = email.strip().lower()
+    found: List[Dict[str, Any]] = []
+    for rec in _load_local_bookings():
+        if str(rec.get("email", "")).strip().lower() != target:
+            continue
+        found.append(
+            {
+                "start": rec.get("start", ""),
+                "end": rec.get("end", ""),
+                "name": rec.get("name", ""),
+                "email": target,
+                "reason": rec.get("reason", ""),
+                "event_id": "",
+                "source": "local",
+            }
+        )
+    return found
+
+
+def _google_appointments_for_email(
+    service, email: str, lookback_days: int = 180, lookahead_days: int = 365
+) -> List[Dict[str, Any]]:
+    """Search the calendar for events whose attendee email matches."""
+    target = email.strip().lower()
+    tz = config.TIMEZONE
+    now = datetime.now(tz)
+    query = {
+        "calendarId": config.CALENDAR_ID,
+        "q": target,
+        "timeMin": (now - timedelta(days=lookback_days)).isoformat(),
+        "timeMax": (now + timedelta(days=lookahead_days)).isoformat(),
+        "singleEvents": True,
+        "orderBy": "startTime",
+        "maxResults": 50,
+    }
+    try:
+        result = service.events().list(**query).execute()
+    except HttpError as exc:
+        logger.error("Google event lookup failed: %s", exc)
+        return []
+
+    found: List[Dict[str, Any]] = []
+    for item in result.get("items", []):
+        attendees = item.get("attendees") or []
+        attendee_emails = [str(a.get("email", "")).lower() for a in attendees]
+        description = str(item.get("description", ""))
+        if target not in attendee_emails and target not in description.lower():
+            continue
+
+        start_raw = item.get("start", {}) or {}
+        end_raw = item.get("end", {}) or {}
+        start_iso = start_raw.get("dateTime")
+        end_iso = end_raw.get("dateTime")
+        # Skip all-day events: they carry a date but no time, so they are not slots.
+        if not start_iso:
+            continue
+        end_iso = end_iso or start_iso
+
+        name = ""
+        for attendee in attendees:
+            if str(attendee.get("email", "")).lower() == target:
+                name = str(attendee.get("displayName", ""))
+                break
+        if not name:
+            name = str(item.get("summary", "")).replace("Appointment:", "").split("--")[0].strip()
+
+        reason = ""
+        for line in description.splitlines():
+            if line.strip().lower().startswith("reason / service:"):
+                reason = line.split(":", 1)[1].strip()
+                break
+
+        found.append(
+            {
+                "start": start_iso,
+                "end": end_iso,
+                "name": name,
+                "email": target,
+                "reason": reason,
+                "event_id": item.get("id", ""),
+                "source": "google",
+            }
+        )
+    return found
+
+
+def find_appointments_by_email(email: str) -> List[Dict[str, Any]]:
+    """
+    Return every appointment booked with the given email, sorted by start time.
+
+    Uses Google Calendar when configured, otherwise the bookings.json fallback.
+    Each item: {start, end, name, email, reason, event_id, source}.
+    """
+    email = (email or "").strip()
+    if not email:
+        return []
+
+    service = _calendar_service()
+    if service is not None:
+        appointments = _google_appointments_for_email(service, email)
+    else:
+        appointments = _local_appointments_for_email(email)
+        logger.warning("Google Calendar not configured; searched local bookings.json")
+
+    appointments.sort(key=lambda item: item.get("start", ""))
+    return appointments
+
+
 def get_available_slots() -> List[Dict[str, str]]:
     """
     Return free slots for the next week.
