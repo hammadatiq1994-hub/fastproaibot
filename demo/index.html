@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chatbot Widget Demo</title>
+  <style>
+    :root { --aicb-primary: #0f766e; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: linear-gradient(160deg, #ecfdf5 0%, #f8fafc 45%, #e2e8f0 100%);
+      color: #0f172a;
+      min-height: 100vh;
+    }
+    header {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 56px 24px 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    p { line-height: 1.6; color: #334155; }
+    .card {
+      max-width: 880px;
+      margin: 0 auto 80px;
+      background: #fff;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 12px 40px rgba(15, 23, 42, .08);
+    }
+    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+    #aicb-root { position: fixed; right: 20px; bottom: 20px; z-index: 999999; }
+    #aicb-launcher {
+      width: 60px; height: 60px; border-radius: 50%; border: 0;
+      background: var(--aicb-primary); color: #fff; cursor: pointer;
+      box-shadow: 0 10px 24px rgba(15,118,110,.35);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #aicb-panel {
+      position: absolute; right: 0; bottom: 76px;
+      width: min(380px, calc(100vw - 24px));
+      height: min(560px, calc(100vh - 120px));
+      background: #fff; border-radius: 16px;
+      box-shadow: 0 18px 50px rgba(15,23,42,.22);
+      display: flex; flex-direction: column; overflow: hidden;
+      opacity: 0; transform: translateY(12px) scale(.98);
+      pointer-events: none; transition: opacity .22s ease, transform .22s ease;
+    }
+    #aicb-root.is-open #aicb-panel { opacity: 1; transform: none; pointer-events: auto; }
+    #aicb-header {
+      background: var(--aicb-primary); color: #fff; padding: 14px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    #aicb-status { display: block; font-size: 12px; opacity: .85; }
+    #aicb-close { background: transparent; border: 0; color: #fff; font-size: 26px; cursor: pointer; }
+    #aicb-messages {
+      flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .aicb-msg {
+      max-width: 82%; padding: 10px 12px; border-radius: 14px;
+      font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word;
+    }
+    .aicb-msg.bot { align-self: flex-start; background: #fff; border: 1px solid #e2e8f0; border-bottom-left-radius: 4px; }
+    .aicb-msg.user { align-self: flex-end; background: var(--aicb-primary); color: #fff; border-bottom-right-radius: 4px; }
+    .aicb-typing { align-self: flex-start; display: flex; gap: 4px; padding: 10px 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; }
+    .aicb-typing span { width: 6px; height: 6px; border-radius: 50%; background: #94a3b8; animation: aicb-bounce 1s infinite; }
+    .aicb-typing span:nth-child(2) { animation-delay: .15s; }
+    .aicb-typing span:nth-child(3) { animation-delay: .3s; }
+    @keyframes aicb-bounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-4px); } }
+    #aicb-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; background: #f8fafc; max-height: 120px; overflow-y: auto; }
+    .aicb-chip { border: 1px solid var(--aicb-primary); color: var(--aicb-primary); background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .aicb-chip:hover { background: var(--aicb-primary); color: #fff; }
+    #aicb-book { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: #fff; border-top: 1px solid #e2e8f0; }
+    #aicb-book[hidden] { display: none !important; }
+    #aicb-book input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+    #aicb-book-slot { margin: 0; font-size: 12px; color: #334155; }
+    .aicb-book-actions { display: flex; gap: 8px; }
+    .aicb-book-actions button { flex: 1; border: 0; border-radius: 8px; padding: 8px; cursor: pointer; font-weight: 600; }
+    .aicb-book-actions button[type=submit] { background: var(--aicb-primary); color: #fff; }
+    #aicb-book-cancel { background: #e2e8f0; }
+    #aicb-form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e2e8f0; background: #fff; }
+    #aicb-input { flex: 1; border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+    #aicb-send { background: var(--aicb-primary); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+    @media (max-width: 480px) {
+      #aicb-root { right: 12px; bottom: 12px; }
+      #aicb-panel { width: calc(100vw - 24px); height: calc(100vh - 96px); bottom: 72px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Website AI Chatbot</h1>
+    <p>Demo of the floating WordPress widget talking to the Flask backend. Open the teal button in the corner to chat, ask about services, or book an appointment.</p>
+  </header>
+  <div class="card">
+    <p><strong>Local test page.</strong> On WordPress, use <code>wordpress-chat-widget.php</code> instead. Configure <code>API_SECRET_KEY</code> in <code>.env</code> so it matches the key used here (demo only; WordPress keeps the key server-side).</p>
+    <p>Try: “What services do you offer?” or “I would like to book an appointment”.</p>
+  </div>
+
+  <div id="aicb-root">
+    <button type="button" id="aicb-launcher" aria-label="Open chat" aria-expanded="false">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H9l-4 4v-4.5A2.5 2.5 0 0 1 4 13.5v-8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <section id="aicb-panel" role="dialog" aria-labelledby="aicb-title">
+      <header id="aicb-header">
+        <div>
+          <strong id="aicb-title">Alex</strong>
+          <span id="aicb-status">Online</span>
+        </div>
+        <button type="button" id="aicb-close" aria-label="Close chat">&times;</button>
+      </header>
+      <div id="aicb-messages" role="log" aria-live="polite"></div>
+      <div id="aicb-quick"></div>
+      <form id="aicb-book" hidden>
+        <p id="aicb-book-slot"></p>
+        <input id="aicb-name" type="text" placeholder="Full name *" required maxlength="80">
+        <input id="aicb-email" type="email" placeholder="Email *" required maxlength="120">
+        <input id="aicb-phone" type="tel" placeholder="Phone (optional)" maxlength="32">
+        <input id="aicb-reason" type="text" placeholder="Reason / service" maxlength="200">
+        <div class="aicb-book-actions">
+          <button type="submit">Confirm booking</button>
+          <button type="button" id="aicb-book-cancel">Cancel</button>
+        </div>
+      </form>
+      <form id="aicb-form" autocomplete="off">
+        <input id="aicb-input" type="text" maxlength="2000" placeholder="Type a message..." aria-label="Message">
+        <button type="submit" id="aicb-send">Send</button>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      var API = window.AICB_API_URL || '';
+      var KEY = '';
+      var LS_KEY = 'aicb_state_v1';
+      var root = document.getElementById('aicb-root');
+      var launcher = document.getElementById('aicb-launcher');
+      var closeBtn = document.getElementById('aicb-close');
+      var messagesEl = document.getElementById('aicb-messages');
+      var quickEl = document.getElementById('aicb-quick');
+      var form = document.getElementById('aicb-form');
+      var input = document.getElementById('aicb-input');
+      var bookForm = document.getElementById('aicb-book');
+      var pendingSlot = null;
+      var state = loadState();
+
+      function loadState() {
+        try {
+          var raw = localStorage.getItem(LS_KEY);
+          if (!raw) return { sessionId: '', messages: [] };
+          var parsed = JSON.parse(raw);
+          return { sessionId: parsed.sessionId || '', messages: Array.isArray(parsed.messages) ? parsed.messages : [] };
+        } catch (e) { return { sessionId: '', messages: [] }; }
+      }
+      function saveState() {
+        try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {}
+      }
+      function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+      function addMessage(role, text, persist) {
+        var div = document.createElement('div');
+        div.className = 'aicb-msg ' + (role === 'user' ? 'user' : 'bot');
+        div.textContent = text;
+        messagesEl.appendChild(div);
+        scrollBottom();
+        if (persist !== false) {
+          state.messages.push({ role: role, text: text });
+          if (state.messages.length > 80) state.messages = state.messages.slice(-80);
+          saveState();
+        }
+      }
+      function setButtons(buttons) {
+        quickEl.innerHTML = '';
+        if (!buttons || !buttons.length) return;
+        buttons.forEach(function (btn) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'aicb-chip';
+          b.textContent = btn.label;
+          b.addEventListener('click', function () {
+            if (btn.start) {
+              pendingSlot = { start: btn.start, end: btn.end || '', label: btn.label };
+              bookForm.hidden = false;
+              document.getElementById('aicb-book-slot').textContent = 'Selected: ' + btn.label;
+              addMessage('user', 'I would like ' + btn.label);
+              addMessage('bot', 'Great. Please confirm your details for ' + btn.label + '.');
+              return;
+            }
+            sendMessage(btn.value || btn.label);
+          });
+          quickEl.appendChild(b);
+        });
+      }
+      var typingEl = null;
+      function showTyping(on) {
+        if (on && !typingEl) {
+          typingEl = document.createElement('div');
+          typingEl.className = 'aicb-typing';
+          typingEl.innerHTML = '<span></span><span></span><span></span>';
+          messagesEl.appendChild(typingEl);
+          scrollBottom();
+        } else if (!on && typingEl) {
+          typingEl.remove();
+          typingEl = null;
+        }
+      }
+      function openChat(open) {
+        root.classList.toggle('is-open', open);
+        launcher.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) { input.focus(); scrollBottom(); }
+      }
+      launcher.addEventListener('click', function () { openChat(!root.classList.contains('is-open')); });
+      closeBtn.addEventListener('click', function () { openChat(false); });
+
+      function api(path, method, payload) {
+        var opts = {
+          method: method || 'GET',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY }
+        };
+        if (method === 'POST') opts.body = JSON.stringify(payload || {});
+        return fetch(API + path, opts).then(function (res) { return res.json(); });
+      }
+
+      function sendMessage(text) {
+        text = (text || '').trim();
+        if (!text) return;
+        addMessage('user', text);
+        setButtons([]);
+        input.value = '';
+        showTyping(true);
+        api('/api/chat', 'POST', { message: text, session_id: state.sessionId })
+          .then(function (data) {
+            showTyping(false);
+            if (data && data.session_id) { state.sessionId = data.session_id; saveState(); }
+            if (data && data.reply) addMessage('bot', data.reply);
+            else addMessage('bot', (data && data.error) || 'Sorry, something went wrong.');
+            setButtons((data && data.buttons) || []);
+          })
+          .catch(function () {
+            showTyping(false);
+            addMessage('bot', 'I could not reach the assistant. Is the Flask server running?');
+          });
+      }
+
+      form.addEventListener('submit', function (e) { e.preventDefault(); sendMessage(input.value); });
+      bookForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (!pendingSlot) return;
+        showTyping(true);
+        api('/api/book', 'POST', {
+          name: document.getElementById('aicb-name').value.trim(),
+          email: document.getElementById('aicb-email').value.trim(),
+          phone: document.getElementById('aicb-phone').value.trim(),
+          reason: document.getElementById('aicb-reason').value.trim(),
+          start: pendingSlot.start,
+          end: pendingSlot.end
+        }).then(function (data) {
+          showTyping(false);
+          if (data && data.ok) {
+            addMessage('bot', data.message || 'Your appointment is confirmed.');
+            pendingSlot = null;
+            bookForm.hidden = true;
+            setButtons([{ label: 'Ask another question', value: 'Thanks, I have another question' }]);
+          } else {
+            addMessage('bot', (data && data.error) || 'Could not complete the booking.');
+          }
+        }).catch(function () {
+          showTyping(false);
+          addMessage('bot', 'Could not complete the booking. Please try again.');
+        });
+      });
+      document.getElementById('aicb-book-cancel').addEventListener('click', function () {
+        pendingSlot = null;
+        bookForm.hidden = true;
+      });
+
+      fetch('/api/widget-config').then(function (r) { return r.json(); }).then(function (cfg) {
+        API = cfg.api_url || '';
+        KEY = cfg.demo_key || KEY;
+        if (cfg.bot_name) document.getElementById('aicb-title').textContent = cfg.bot_name;
+      }).catch(function () {}).finally(function () {
+        if (state.messages.length) {
+          state.messages.forEach(function (m) { addMessage(m.role, m.text, false); });
+        } else {
+          addMessage('bot', 'Hi, I am ' + document.getElementById('aicb-title').textContent + '. How can I help you today?', false);
+          setButtons([
+            { label: 'Book Appointment', value: 'I would like to book an appointment' },
+            { label: 'Our services', value: 'What services do you offer?' }
+          ]);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
