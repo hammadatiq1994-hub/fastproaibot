@@ -407,15 +407,30 @@ _CANCEL_RE = re.compile(
 )
 
 
+_APPOINTMENT_WORD_RE = re.compile(
+    r"\b(appointment|appt|booking|booked|reservation|reserved|slot|schedule)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_appointment_lookup(message: str) -> bool:
     """True when the visitor is asking to check an existing appointment."""
     text = message.lower()
-    if not any(phrase in text for phrase in _LOOKUP_PHRASES):
-        return False
-    # "book my appointment" is a booking request, not a status check.
-    if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
-        return False
-    return True
+
+    # Strongest signal: an explicit "check / status / when" request.
+    if any(phrase in text for phrase in _LOOKUP_PHRASES):
+        # "book my appointment" is a booking request, not a status check.
+        if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
+            return False
+        return True
+
+    # One-shot phrasing that combines an email, a status word and appointment
+    # wording, e.g. "check my appointment, my email is x@y.com". Requires a
+    # status word so a plain booking request with an email is never hijacked.
+    if _extract_email(message) and _APPOINTMENT_WORD_RE.search(text) and _STATUS_ACTION_RE.search(text):
+        return True
+
+    return False
 
 
 def _extract_email(message: str) -> Optional[str]:
@@ -450,7 +465,13 @@ def _format_appointment_time(start_iso: str, end_iso: str) -> str:
 
 
 def _appointment_status_reply(email: str) -> str:
-    """Look up the visitor's appointments and describe expired vs upcoming."""
+    """
+    Look up the visitor's appointments and report only the upcoming ones.
+
+    Expired appointments are never listed when a future appointment exists.
+    If the visitor has no future appointment at all, the most recent expired
+    one is mentioned so they know that slot has passed.
+    """
     try:
         appointments = calendar_service.find_appointments_by_email(email)
     except Exception as exc:
@@ -485,41 +506,28 @@ def _appointment_status_reply(email: str) -> str:
             "Please contact us to confirm."
         )
 
-    lines: List[str] = []
+    # Upcoming appointments win: show only these, never the expired ones.
     if upcoming:
         if len(upcoming) == 1:
             appt = upcoming[0][1]
-            lines.append(
+            return (
                 "Yes, your appointment is confirmed for "
                 f"{_format_appointment_time(appt.get('start', ''), appt.get('end', ''))}."
             )
-        else:
-            lines.append("Yes, you have these upcoming appointments:")
-            for _, appt in upcoming:
-                lines.append(
-                    "- "
-                    + _format_appointment_time(appt.get("start", ""), appt.get("end", ""))
-                )
-
-    if expired:
-        if upcoming:
-            lines.append("These earlier appointments have already expired:")
-        elif len(expired) == 1:
-            appt = expired[0][1]
-            lines.append(
-                "Your appointment on "
-                f"{_format_appointment_time(appt.get('start', ''), appt.get('end', ''))} "
-                "has already expired."
-            )
-            expired = []
-        else:
-            lines.append("All of your appointments have already expired:")
-        for _, appt in expired:
+        lines = ["Yes, you have these upcoming appointments:"]
+        for _, appt in upcoming:
             lines.append(
                 "- " + _format_appointment_time(appt.get("start", ""), appt.get("end", ""))
             )
+        return "\n".join(lines)
 
-    return "\n".join(lines)
+    # No future appointment: report the latest expired one so the visitor knows.
+    latest = expired[-1][1]
+    return (
+        "Your appointment on "
+        f"{_format_appointment_time(latest.get('start', ''), latest.get('end', ''))} "
+        "has already expired. Would you like me to book a new one?"
+    )
 
 
 # ---------------------------------------------------------------------------
