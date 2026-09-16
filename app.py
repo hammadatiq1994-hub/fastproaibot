@@ -94,8 +94,8 @@ _rate_lock = threading.Lock()
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-def _extract_booking_state(history: List[Dict[str, str]]) -> str:
-    """History scan kar ke batao booking details me kya collect ho chuka hai."""
+def _extract_booking_state(history: List[Dict[str, str]], booked: bool = False) -> str:
+    """Summarise which booking details are already known for this visitor."""
     text = " ".join(m.get("content", "") for m in history).lower()
 
     has_email = bool(re.search(r"[^@\s]+@[^@\s]+\.[^@\s]+", text))
@@ -104,7 +104,7 @@ def _extract_booking_state(history: List[Dict[str, str]]) -> str:
     lines = [
         f"- Email collected: {'YES' if has_email else 'NO - ask for it'}",
         f"- Name collected: {'YES' if has_name else 'NO - ask for it'}",
-        "- Booking confirmed: NO",
+        f"- Booking confirmed: {'YES - do not offer booking again' if booked else 'NO'}",
     ]
     return "\n".join(lines)
 
@@ -148,10 +148,12 @@ APPOINTMENT GUIDANCE
 - Never claim a slot is booked until the system confirms it.
 
 CHECKING AN EXISTING APPOINTMENT
+- You CAN check appointments. Never say you are unable to access appointment
+  details, and never refuse or send the visitor away for this.
 - If the visitor wants to check, confirm, or look up an appointment they
   already made, ask for the email address they booked with. Never guess or
   invent whether a booking exists, and never state a time from memory.
-- The appointment lookup is handled by the system. Keep this reply short.
+- The appointment lookup itself is handled by the system. Keep this reply short.
 
 HANDLING DIFFICULT MOMENTS
 - If the user is frustrated or complains: acknowledge the feeling first
@@ -274,6 +276,19 @@ def _set_session_mode(session_id: str, mode: Optional[str]) -> None:
         rec["updated"] = time.time()
 
 
+def _is_session_booked(session_id: str) -> bool:
+    with _sessions_lock:
+        rec = _sessions.get(session_id)
+        return bool(rec.get("booked")) if rec else False
+
+
+def _set_session_booked(session_id: str, booked: bool = True) -> None:
+    with _sessions_lock:
+        rec = _sessions.setdefault(session_id, {"messages": [], "updated": time.time()})
+        rec["booked"] = booked
+        rec["updated"] = time.time()
+
+
 def _openai_client() -> OpenAI:
     return OpenAI(
         api_key=config.OPENROUTER_API_KEY,
@@ -310,26 +325,73 @@ def _extract_buttons(reply: str) -> Tuple[str, List[Dict[str, str]]]:
     return text, buttons
 
 
-def _intent_wants_slots(user_message: str, history: List[Dict[str, str]]) -> bool:
-    """Heuristic: user is in the booking flow and needs to see time slots."""
-    text = user_message.lower()
-    keywords = (
-        "book",
-        "appointment",
-        "schedule",
-        "availability",
-        "available time",
-        "time slot",
-        "timeslot",
-        "reserve",
-        "meeting",
-    )
-    if any(k in text for k in keywords):
+_SLOT_REQUEST_RE = re.compile(
+    r"\b(book|booking|schedule|reschedule|reserve|slot|slots|meeting|availability)\b",
+    re.IGNORECASE,
+)
+# "appointment" is only a booking request when paired with an action word,
+# so "what is an appointment?" does not open the slot picker.
+_APPOINTMENT_REQUEST_RE = re.compile(
+    r"\b(?:appointment|appt)\b[^.!?]{0,40}?\b(?:book|schedule|reserve|make|set|arrange|want|need|new|another)\b"
+    r"|\b(?:book|schedule|reserve|make|set|arrange|want|need|new|another)\b[^.!?]{0,40}?\b(?:appointment|appt)\b",
+    re.IGNORECASE,
+)
+_SHOW_MORE_RE = re.compile(r"show more appointment|more appointment time", re.IGNORECASE)
+_AGREE_RE = re.compile(
+    r"^(yes|yeah|yep|yup|sure|ok|okay|please|go ahead|sounds good|that works|confirm)\b",
+    re.IGNORECASE,
+)
+_BOT_OFFERED_BOOKING = (
+    "would you like me to book",
+    "book a free consultation",
+    "book an appointment",
+    "see available times",
+    "available times",
+    "available time slot",
+    "pick a time",
+    "choose a slot",
+)
+
+
+def _last_assistant_message(history: List[Dict[str, str]]) -> str:
+    for msg in reversed(history):
+        if msg.get("role") == "assistant":
+            return (msg.get("content") or "").lower()
+    return ""
+
+
+def _intent_wants_slots(
+    user_message: str,
+    history: List[Dict[str, str]],
+    booked: bool = False,
+) -> bool:
+    """
+    True only when the visitor clearly wants to pick an appointment time.
+
+    Slots are shown when the visitor explicitly asks to book, or agrees after
+    the bot offered to book. Once a booking is confirmed for this session they
+    are not shown again unless the visitor asks to book a new one.
+    """
+    text = user_message.lower().strip()
+
+    if booked:
+        # A completed booking must not reopen the slot list on "ok"/"thanks".
+        return bool(
+            re.search(r"\b(book|schedule|reserve|another|new appointment)\b", text)
+        )
+
+    if (
+        _SLOT_REQUEST_RE.search(text)
+        or _APPOINTMENT_REQUEST_RE.search(text)
+        or _SHOW_MORE_RE.search(text)
+    ):
         return True
-    recent = " ".join(m.get("content", "") for m in history[-4:]).lower()
-    return "book" in recent and any(
-        w in text for w in ("yes", "sure", "ok", "okay", "please", "go ahead", "yeah")
-    )
+
+    # Agreement is only enough when the bot's previous turn actually offered it.
+    if _AGREE_RE.search(text):
+        return any(phrase in _last_assistant_message(history) for phrase in _BOT_OFFERED_BOOKING)
+
+    return False
 
 
 def _slot_buttons(limit: int = 8) -> List[Dict[str, str]]:
@@ -408,26 +470,39 @@ _CANCEL_RE = re.compile(
 
 
 _APPOINTMENT_WORD_RE = re.compile(
-    r"\b(appointment|appt|booking|booked|reservation|reserved|slot|schedule)\b",
+    r"\b(appointment|appt|bookings?|booked|reservations?|reserved|slots?|scheduled)\b",
     re.IGNORECASE,
 )
 
 
 def _is_appointment_lookup(message: str) -> bool:
-    """True when the visitor is asking to check an existing appointment."""
+    """
+    True when the visitor is asking to check an existing appointment.
+
+    Bookings are only treated as a *new* booking when the visitor uses an
+    action word (book/schedule/reserve) without any status word. Everything
+    else that pairs appointment wording with a status word is a lookup.
+    """
     text = message.lower()
 
-    # Strongest signal: an explicit "check / status / when" request.
+    # Strongest signal: an explicit "check / status / when" phrase.
     if any(phrase in text for phrase in _LOOKUP_PHRASES):
-        # "book my appointment" is a booking request, not a status check.
         if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
             return False
         return True
 
-    # One-shot phrasing that combines an email, a status word and appointment
-    # wording, e.g. "check my appointment, my email is x@y.com". Requires a
-    # status word so a plain booking request with an email is never hijacked.
-    if _extract_email(message) and _APPOINTMENT_WORD_RE.search(text) and _STATUS_ACTION_RE.search(text):
+    # Appointment wording + a status word (e.g. "can you verify my booking",
+    # "my appointment time?", "appointment for x@y.com, please find it").
+    if _APPOINTMENT_WORD_RE.search(text) and _STATUS_ACTION_RE.search(text):
+        if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
+            return False
+        return True
+
+    # Appointment wording + an email address (e.g. "appointment, my email is
+    # x@y.com"). A pure booking request with an email is never hijacked.
+    if _extract_email(message) and _APPOINTMENT_WORD_RE.search(text):
+        if _BOOK_ACTION_RE.search(text) and not _STATUS_ACTION_RE.search(text):
+            return False
         return True
 
     return False
@@ -436,6 +511,44 @@ def _is_appointment_lookup(message: str) -> bool:
 def _extract_email(message: str) -> Optional[str]:
     match = EMAIL_SEARCH_RE.search(message)
     return match.group(0) if match else None
+
+
+def _is_email_only(message: str) -> bool:
+    """True when the message is basically just an email address."""
+    email = _extract_email(message)
+    if not email:
+        return False
+    remainder = message.replace(email, "").strip(" .,:;-!?<>()[]")
+    return len(remainder) <= 3
+
+
+_REFUSAL_PATTERNS = (
+    "can't access",
+    "cannot access",
+    "can not access",
+    "don't have access",
+    "do not have access",
+    "unable to access",
+    "no access to",
+    "can't check",
+    "cannot check",
+    "unable to check",
+    "can't look up",
+    "cannot look up",
+    "unable to look up",
+    "can't retrieve",
+    "cannot retrieve",
+    "unable to retrieve",
+    "don't have the ability",
+    "do not have the ability",
+    "not able to access",
+)
+
+
+def _looks_like_refusal(reply: str) -> bool:
+    """True when the model claims it cannot check appointment data."""
+    low = (reply or "").lower()
+    return any(pattern in low for pattern in _REFUSAL_PATTERNS)
 
 
 def _format_appointment_time(start_iso: str, end_iso: str) -> str:
@@ -633,7 +746,14 @@ def chat():
     # it asks for the visitor's email, looks up the booking, then reports
     # whether the slot is still upcoming or has already expired.
     mode = _get_session_mode(session_id)
-    if _is_appointment_lookup(message) or mode == "lookup":
+    # Safety net: if the bot just asked for the booking email and the visitor
+    # replies with only their address, treat it as the lookup even when the
+    # original wording was not recognised as a lookup.
+    last_bot = _last_assistant_message(history)
+    awaiting_email = mode == "lookup" or (
+        "email address you used" in last_bot or "check that for you" in last_bot
+    )
+    if _is_appointment_lookup(message) or mode == "lookup" or (_is_email_only(message) and awaiting_email):
         if _CANCEL_RE.search(message) and not _extract_email(message):
             _set_session_mode(session_id, None)
             reply = "No problem. Is there anything else I can help you with?"
@@ -686,7 +806,7 @@ def chat():
         bot_name=config.BOT_NAME,
         business=config.BUSINESS_NAME,
         context=context,
-          booking_state=_extract_booking_state(history), 
+        booking_state=_extract_booking_state(history, _is_session_booked(session_id)),
     )
 
     messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
@@ -694,12 +814,18 @@ def chat():
     messages.append({"role": "user", "content": message})
 
     if not config.llm_ready():
-        reply = (
-            f"Thanks for reaching out to {config.BUSINESS_NAME}. "
-            "The AI engine is not configured yet, but I can still help you book "
-            "an appointment. Would you like to see available times?"
-        )
-        extra_buttons = [{"label": "Book Appointment", "value": "I would like to book an appointment"}]
+        if _is_session_booked(session_id):
+            reply = (
+                "You're all set. Is there anything else I can help you with?"
+            )
+            extra_buttons = []
+        else:
+            reply = (
+                f"Thanks for reaching out to {config.BUSINESS_NAME}. "
+                "The AI engine is not configured yet, but I can still help you book "
+                "an appointment. Would you like to see available times?"
+            )
+            extra_buttons = [{"label": "Book Appointment", "value": "I would like to book an appointment"}]
         logger.warning("OPENROUTER_API_KEY missing; returning fallback reply.")
     else:
         try:
@@ -719,22 +845,46 @@ def chat():
 
     reply, buttons = _extract_buttons(reply)
 
-    if slot_iso:
-        extra_buttons = []
-        if "email" not in " ".join(m.get("content", "") for m in history).lower() and "@" not in message:
-            # Nudge: booking still needs contact details.
-            pass
+    # Safety net: if the model wrongly claims it cannot access appointments,
+    # switch to the deterministic lookup so the visitor is never sent away.
+    if _APPOINTMENT_WORD_RE.search(message) and _looks_like_refusal(reply):
+        email = _extract_email(message)
+        if email:
+            _set_session_mode(session_id, None)
+            reply = _appointment_status_reply(email)
+            buttons = [{"label": "Book Appointment", "value": "I would like to book an appointment"}]
+        else:
+            _set_session_mode(session_id, "lookup")
+            reply = (
+                "Sure, I can check that for you. "
+                "Please enter the email address you used when booking."
+            )
+            buttons = [
+                {"label": "Book Appointment", "value": "I would like to book an appointment"},
+                {"label": "Cancel", "value": "cancel"},
+            ]
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        _save_session(session_id, history)
+        return jsonify(
+            {"reply": reply, "session_id": session_id, "buttons": buttons, "sources_used": 0}
+        )
 
-    if _intent_wants_slots(message, history) or slot_iso is None and "show more appointment" in message.lower():
+    if slot_iso:
+        # The visitor picked a time. Do not show the slot list again; the widget
+        # opens the booking form so they can finish their details.
+        extra_buttons = []
+        buttons = []
+        reply = "Great choice. Please confirm your details to finish booking."
+    elif _intent_wants_slots(message, history, booked=_is_session_booked(session_id)):
         slot_btns = _slot_buttons()
         if slot_btns and not any(b.get("start") for b in buttons):
             extra_buttons = slot_btns
-            if "book" in message.lower() or "appointment" in message.lower() or "more appointment" in message.lower():
-                if "available" not in reply.lower() and "slot" not in reply.lower():
-                    reply = (
-                        reply.rstrip()
-                        + "\n\nHere are the next available times. Tap a slot to select it."
-                    )
+            if "available" not in reply.lower() and "slot" not in reply.lower():
+                reply = (
+                    reply.rstrip()
+                    + "\n\nHere are the next available times. Tap a slot to select it."
+                )
 
     if extra_buttons:
         buttons = extra_buttons
@@ -783,6 +933,7 @@ def book():
     reason = str(payload.get("reason", "")).strip()
     start_iso = str(payload.get("start", "")).strip()
     end_iso = str(payload.get("end", "")).strip()
+    session_id = str(payload.get("session_id") or request.headers.get("X-Session-Id") or "")
 
     errors = []
     if len(name) < 2:
@@ -836,6 +987,12 @@ def book():
         confirmation += (
             " (Email delivery is not fully configured yet; the appointment is still saved.)"
         )
+
+    # Remember that this session already booked so the slot list stays closed
+    # on the next "ok"/"thanks" reply.
+    if session_id:
+        _set_session_booked(session_id, True)
+        _set_session_mode(session_id, None)
 
     return jsonify(
         {

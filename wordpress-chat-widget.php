@@ -149,7 +149,7 @@ function aicb_css() {
 #aicb-header { background: var(--aicb-primary); color: #fff; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
 #aicb-status { display: block; font-size: 12px; opacity: .85; }
 #aicb-close { background: transparent; border: 0; color: #fff; font-size: 26px; line-height: 1; cursor: pointer; }
-#aicb-messages { flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 10px; }
+#aicb-messages { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 10px; }
 .aicb-msg { max-width: 82%; padding: 10px 12px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
 .aicb-msg.bot { align-self: flex-start; background: #fff; color: #0f172a; border: 1px solid #e2e8f0; border-bottom-left-radius: 4px; }
 .aicb-msg.user { align-self: flex-end; background: var(--aicb-primary); color: #fff; border-bottom-right-radius: 4px; }
@@ -158,10 +158,11 @@ function aicb_css() {
 .aicb-typing span:nth-child(2) { animation-delay: .15s; }
 .aicb-typing span:nth-child(3) { animation-delay: .3s; }
 @keyframes aicb-bounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-4px); } }
-#aicb-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; background: #f8fafc; max-height: 120px; overflow-y: auto; }
+#aicb-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; background: #f8fafc; max-height: 110px; overflow-y: auto; flex: 0 0 auto; }
+#aicb-quick[hidden] { display: none !important; }
 .aicb-chip { border: 1px solid var(--aicb-primary); color: var(--aicb-primary); background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
 .aicb-chip:hover { background: var(--aicb-primary); color: #fff; }
-#aicb-book { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: #fff; border-top: 1px solid #e2e8f0; }
+#aicb-book { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: #fff; border-top: 1px solid #e2e8f0; flex: 0 0 auto; max-height: 62%; overflow-y: auto; }
 #aicb-book[hidden] { display: none !important; }
 #aicb-book input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
 #aicb-book-slot { margin: 0; font-size: 12px; color: #334155; }
@@ -242,6 +243,7 @@ function aicb_js() {
   function setButtons(buttons) {
     quickEl.innerHTML = '';
     if (!buttons || !buttons.length) return;
+    quickEl.hidden = false;
     buttons.forEach(function (btn) {
       var b = document.createElement('button');
       b.type = 'button';
@@ -263,6 +265,7 @@ function aicb_js() {
 
   function showBookForm() {
     bookForm.hidden = false;
+    quickEl.hidden = true;
     document.getElementById('aicb-book-slot').textContent = pendingSlot
       ? 'Selected: ' + pendingSlot.label
       : 'Select a time first.';
@@ -270,6 +273,7 @@ function aicb_js() {
 
   function hideBookForm() {
     bookForm.hidden = true;
+    quickEl.hidden = false;
   }
 
   var typingEl = null;
@@ -362,13 +366,15 @@ function aicb_js() {
       phone: phone,
       reason: reason,
       start: pendingSlot.start,
-      end: pendingSlot.end
+      end: pendingSlot.end,
+      session_id: state.sessionId
     }).then(function (data) {
       showTyping(false);
       if (data && data.ok) {
         addMessage('bot', data.message || 'Your appointment is confirmed.');
         pendingSlot = null;
         hideBookForm();
+        bookForm.reset();
         setButtons([{ label: 'Ask another question', value: 'Thanks, I have another question' }]);
       } else {
         addMessage('bot', (data && data.error) || 'Could not complete the booking. Please pick another time.');
