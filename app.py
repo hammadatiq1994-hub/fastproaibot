@@ -120,17 +120,30 @@ PERSONALITY & TONE
   language, reply in that same language (keep business names as-is).
 
 GROUNDING RULES
-- Answer ONLY using the knowledge-base excerpts below. Never use outside
-  knowledge, even if you think you know the answer.
-- Answer the question FIRST from the excerpts. Quote prices, plan names,
-  coverage, hours, and contact details when they appear. Do not skip a
+- Prefer the knowledge-base excerpts below for company-specific facts
+  (prices, plan names, hours, address, phone, policies, what this firm offers).
+- Answer the question FIRST. Quote prices, plan names, coverage, hours,
+  and contact details when they appear in the excerpts. Do not skip a
   known answer and jump to booking.
-- If the excerpts partially answer the question, share what you do know,
-  then offer a consultation only for the missing part.
-- If the excerpts do not contain the answer at all, say you don't have
-  that information right now, and offer to book an appointment.
-- Never invent plan features, prices, or guarantees that are not in the
-  excerpts. Never quote prices that are not explicitly present.
+- If the excerpts only partly answer the question, share what you do know,
+  then fill in the rest with a general in-domain explanation.
+- If the excerpts do not contain a specific answer, but the question is
+  still in this firm's domain (tax, payroll, accounting, bookkeeping,
+  business setup, licensing, insurance, BOI/CTA, compliance), give a
+  helpful general answer from your professional knowledge. Be clear that
+  it is general guidance, not this firm's quoted policy or a personalized
+  determination. Do NOT say "I don't have that information" for in-domain
+  questions.
+- Never invent this firm's prices, plan features, guarantees, hours, or
+  contact details. If those specifics are missing from the excerpts, give
+  the general explanation and offer a consultation for an exact quote.
+- If the question is clearly outside this firm's domain (sports, cooking,
+  celebrity gossip, unrelated tech, etc.), say you focus on tax and
+  business services and offer to book a consultation or answer a related
+  question. Do not answer off-topic questions.
+- Never give personalized tax, legal, or financial conclusions
+  (e.g. "you qualify for X", "you owe $Y"). Explain the general rule and
+  recommend a free consultation for their situation.
 - If asked whether you are an AI, admit it honestly and warmly, then
   continue helping.
 
@@ -301,6 +314,43 @@ def _openai_client() -> OpenAI:
             "X-Title": config.BUSINESS_NAME,
         },
     )
+
+
+_DOMAIN_RE = re.compile(
+    r"\b("
+    r"tax|taxes|taxation|irs|fincen|boi|cta|payroll|w-?2|1099|1098|"
+    r"deduction|credit|withholding|sales tax|income tax|return|"
+    r"accounting|bookkeeping|invoice|invoicing|ar/ap|reconciliation|"
+    r"llc|s-?corp|c-?corp|dba|corporation|partnership|ein|itin|"
+    r"license|licensing|permit|formation|incorporation|"
+    r"insurance|liability|workers?\s*comp\w*|compensation|disability|bop|"
+    r"plan|starter|advanced|enterprise|employee|employees|"
+    r"consultation|compliance|bookkeeping|virtual office|"
+    r"beneficial owner|financing|loan"
+    r")\b",
+    re.IGNORECASE,
+)
+_OUT_OF_DOMAIN_RE = re.compile(
+    r"\b("
+    r"recipe|cook|cooking|soccer|football|cricket|nba|nfl|mlb|nhl|"
+    r"super bowl|world cup|movie|netflix|celebrity|weather|horoscope|"
+    r"bitcoin|crypto|video game|lyrics|sports|score"
+    r")\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP_RE = re.compile(
+    r"^(and|also|what about|how about|tell me more|more details|that too)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_in_domain(message: str) -> bool:
+    """True when the question is about this firm's field of work."""
+    if _OUT_OF_DOMAIN_RE.search(message):
+        return False
+    if _DOMAIN_RE.search(message):
+        return True
+    return bool(_FOLLOWUP_RE.search(message.strip()))
 
 
 def _extract_buttons(reply: str) -> Tuple[str, List[Dict[str, str]]]:
@@ -799,11 +849,21 @@ def chat():
     hits = rag.retrieve(message)
     context = rag.format_context(hits)
     if not context:
-        context = (
-            "(No matching knowledge-base excerpts were found for this question. "
-            "Tell the visitor you do not have that information and offer to book "
-            "an appointment.)"
-        )
+        if _is_in_domain(message):
+            context = (
+                "(No matching knowledge-base excerpts were found. The question is "
+                "still in this firm's domain. Give a helpful general answer from "
+                "professional knowledge. Do not invent this firm's prices, plan "
+                "features, hours, or policies. Do not say you lack the information. "
+                "Offer a consultation only if they need a firm-specific quote.)"
+            )
+        else:
+            context = (
+                "(No matching knowledge-base excerpts were found, and the question "
+                "appears outside this firm's domain. Politely say you focus on tax "
+                "and business services, then offer to book an appointment or answer "
+                "a related question. Do not answer the off-topic question.)"
+            )
 
     system = SYSTEM_PROMPT.format(
         bot_name=config.BOT_NAME,
