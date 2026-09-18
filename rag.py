@@ -30,6 +30,24 @@ _collection = None
 CHUNK_SIZE = 700
 CHUNK_OVERLAP = 120
 
+# Markdown-style section headings. Splitting on these keeps related blocks
+# (e.g. "Pricing — Payroll Services" and its table) in their own chunk instead
+# of diluting them with neighbouring sections, which improves retrieval.
+SECTION_HEADING_RE = re.compile(
+    r"^(?:"
+    r"pricing\b.*"
+    r"|about us"
+    r"|contact & location"
+    r"|our services"
+    r"|general guidance"
+    r"|booking / next steps"
+    r"|frequently asked questions"
+    r"|faq"
+    r"|assistant rules\b.*"
+    r")$",
+    re.IGNORECASE,
+)
+
 
 def _embedding_fn():
     """ONNX MiniLM -- downloaded once into the local Chroma cache."""
@@ -53,13 +71,28 @@ def get_collection():
     return _collection
 
 
-def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    """Split text into overlapping chunks, preferring paragraph / sentence boundaries."""
-    text = re.sub(r"\r\n?", "\n", text).strip()
-    if not text:
-        return []
+def _split_sections(text: str) -> List[str]:
+    """Split on markdown section headings so each section is chunked on its own."""
+    sections: List[str] = []
+    current: List[str] = []
+    for line in text.split("\n"):
+        if (
+            SECTION_HEADING_RE.match(line.strip())
+            and any(part.strip() for part in current)
+        ):
+            sections.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append("\n".join(current))
+    return [section for section in sections if section.strip()]
+
+
+def _chunk_block(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """Chunk a single section, preferring paragraph / sentence boundaries."""
     if len(text) <= chunk_size:
-        return [text]
+        return [text] if text.strip() else []
 
     paragraphs = re.split(r"\n{2,}", text)
     chunks: List[str] = []
@@ -101,6 +134,20 @@ def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
                     buf = sent
     if buf:
         flush(buf)
+    return chunks
+
+
+def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
+    """Split text into overlapping chunks, preferring section then paragraph boundaries."""
+    text = re.sub(r"\r\n?", "\n", text).strip()
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
+
+    chunks: List[str] = []
+    for section in _split_sections(text):
+        chunks.extend(_chunk_block(section.strip(), chunk_size, overlap))
     return chunks
 
 

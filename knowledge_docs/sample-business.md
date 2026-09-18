@@ -96,11 +96,27 @@ Additional state return	$50
 Accepted payment methods: money order, personal check, or credit card.
 
 Pricing — Payroll Services
-Plan	Price
-Starter Plan	$9.90/month
-Advanced Plan	$20/month
-Enterprise Plan	$50/month
+Plan	Price	Best for
+Starter Plan	$9.90/month	1–4 employees
+Advanced Plan	$20/month	5–15 employees
+Enterprise Plan	$50/month	16+ employees or multiple locations
 These are starting prices. Contact us for a recommendation based on your employee count.
+
+Payroll plan coverage
+All three payroll plans include automated payroll tax calculation, payment, and filing, a dedicated point of contact, and 24/7 support. Payroll can be run by phone, email, online, or mobile.
+
+Starter Plan ($9.90/month) is for very small teams (typically 1–4 employees). It covers basic payroll runs, tax calculation, payment, and filing.
+
+Advanced Plan ($20/month) is the recommended payroll plan for a company with about 10 employees. It covers:
+- Unlimited payroll runs for up to 15 employees
+- Automated federal, state, and local payroll tax calculation, payment, and filing
+- Direct deposit for employees
+- A dedicated point of contact and 24/7 support
+- Access by phone, email, online, or mobile
+- Year-end W-2 / 1099 preparation support
+A 10-employee company fits the Advanced Plan (5–15 employees). The Starter Plan is too small; Enterprise is only needed for 16+ employees or multiple locations.
+
+Enterprise Plan ($50/month) is for larger teams (16+ employees) or businesses with multiple locations that need extra reporting and dedicated account support.
 
 General Guidance
 (Informational only — not a substitute for a consultation.)
